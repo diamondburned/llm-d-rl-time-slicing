@@ -1,0 +1,6 @@
+apiVersion: v2
+name: donor-controller
+description: A Helm chart for Kubernetes deploying the donor controller (draft)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

@@ -53,4 +53,9 @@ nvidia-dra-driver-gpu:
               values:
               - "true"
 
+# Override values for the donor-controller subchart (draft, opt-in)
+donor-controller:
+  enabled: false
+
+
 

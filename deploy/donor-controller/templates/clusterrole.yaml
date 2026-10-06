@@ -1,0 +1,24 @@
+{{- if .Values.rbac.create -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "donor-controller.fullname" . }}
+  labels:
+    {{- include "donor-controller.labels" . | nindent 4 }}
+rules:
+  # Nodes:
+  # - get: live precondition check for NodeAbsent (W4)
+  # - list, watch: informer for all nodes (W1-W4)
+  # - patch: server-side apply for metadata (labels/annotations) and merge-patch for taints (W1-W3, W5)
+  # - delete: virtual node deletion upon real host removal (W4)
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch", "patch", "delete"]
+
+  # Pods:
+  # - get, list, watch: informers for donor/guest pods across all namespaces (W1-W3)
+  #   and live precondition listing for NoDonorPodsOn before unsharing (W3/unshare)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+{{- end }}

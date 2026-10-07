@@ -15,24 +15,36 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
-	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/donor-controller/controller"
+	"github.com/go-logr/logr"
+	donorcontroller "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/donor-controller"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/donor-controller/policy"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/logging"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	ctrl "sigs.k8s.io/controller-runtime"
+	rtcache "sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/config"
+	"sigs.k8s.io/controller-runtime/pkg/healthz"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 )
+
+var (
+	scheme = runtime.NewScheme()
+)
+
+func init() {
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -44,14 +56,19 @@ func main() {
 func run() error {
 	jsonHandler := slog.NewJSONHandler(os.Stdout, nil)
 	ctxHandler := logging.NewContextHandler(jsonHandler)
-	slog.SetDefault(slog.New(ctxHandler))
+	logger := slog.New(ctxHandler)
+	slog.SetDefault(logger)
+	ctrl.SetLogger(logr.FromSlogHandler(ctxHandler))
 
-	kubeconfig := flag.String("kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
 	workers := flag.Int("workers", 2, "The number of worker goroutines for the controller")
 	idleTTL := flag.Duration("idle-ttl", 5*time.Minute, "Idle TTL before unsharing a node")
 	resyncPeriod := flag.Duration("resync-period", 10*time.Minute, "Informer resync period")
 	dryRun := flag.Bool("dry-run", false, "Log intended changes without making live API calls")
 	isolationTaintFlag := flag.String("isolation-taint", "", "Isolation taint for shared nodes (format: key=value:Effect or key:Effect; valid effects: NoSchedule, PreferNoSchedule, NoExecute)")
+	leaderElect := flag.Bool("leader-elect", false, "Enable leader election for controller manager")
+	leaderElectionNamespace := flag.String("leader-election-namespace", "", "Namespace in which the leader election resource will be created (default is in-cluster namespace)")
+	metricsBindAddress := flag.String("metrics-bind-address", ":8080", "The address the metrics endpoint binds to (\"0\" disables)")
+	healthProbeBindAddress := flag.String("health-probe-bind-address", ":8081", "The address the probe endpoint binds to")
 	flag.Parse()
 
 	taint, err := parseIsolationTaint(*isolationTaintFlag)
@@ -59,17 +76,45 @@ func run() error {
 		return fmt.Errorf("invalid --isolation-taint flag: %w", err)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	config, err := buildKubeConfig(*kubeconfig)
+	restConfig, err := config.GetConfig()
 	if err != nil {
-		return fmt.Errorf("failed to load kubernetes config: %w", err)
+		return fmt.Errorf("unable to load kubernetes config: %w", err)
 	}
 
-	clientset, err := kubernetes.NewForConfig(config)
+	metricsOpts := metricsserver.Options{
+		BindAddress: *metricsBindAddress,
+	}
+
+	cacheOpts := rtcache.Options{
+		SyncPeriod: resyncPeriod,
+		ByObject: map[client.Object]rtcache.ByObject{
+			&corev1.Pod{}: {
+				Transform: policy.TrimPod,
+			},
+		},
+	}
+
+	mgrOpts := ctrl.Options{
+		Scheme:                        scheme,
+		Metrics:                       metricsOpts,
+		HealthProbeBindAddress:        *healthProbeBindAddress,
+		LeaderElection:                *leaderElect,
+		LeaderElectionID:              "donor-controller.timeslice.io",
+		LeaderElectionReleaseOnCancel: true,
+		LeaderElectionNamespace:       *leaderElectionNamespace,
+		Cache:                         cacheOpts,
+	}
+
+	mgr, err := ctrl.NewManager(restConfig, mgrOpts)
 	if err != nil {
-		return fmt.Errorf("failed to create kubernetes client: %w", err)
+		return fmt.Errorf("unable to create manager: %w", err)
+	}
+
+	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
+		return fmt.Errorf("unable to set up health check: %w", err)
+	}
+	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+		return fmt.Errorf("unable to set up ready check: %w", err)
 	}
 
 	cfg := policy.Config{
@@ -77,11 +122,14 @@ func run() error {
 		IsolationTaint: taint,
 	}
 
-	opts := controller.Options{
-		Workers:      *workers,
-		ResyncPeriod: *resyncPeriod,
-		DryRun:       *dryRun,
+	if err := donorcontroller.Setup(mgr, cfg, donorcontroller.Options{
+		DryRun:  *dryRun,
+		Workers: *workers,
+	}); err != nil {
+		return fmt.Errorf("unable to set up donor-controller: %w", err)
 	}
+
+	ctx := ctrl.SetupSignalHandler()
 
 	slog.InfoContext(ctx, "Starting donor-controller",
 		"workers", *workers,
@@ -89,15 +137,16 @@ func run() error {
 		"resyncPeriod", *resyncPeriod,
 		"dryRun", *dryRun,
 		"isolationTaint", *isolationTaintFlag,
+		"leaderElect", *leaderElect,
+		"leaderElectionNamespace", *leaderElectionNamespace,
+		"metricsBindAddress", *metricsBindAddress,
+		"healthProbeBindAddress", *healthProbeBindAddress,
 	)
 
-	rules := policy.Rules(cfg)
-	ctrl, err := controller.New(clientset, cfg, rules, opts)
-	if err != nil {
-		return fmt.Errorf("failed to create donor-controller: %w", err)
+	if err := mgr.Start(ctx); err != nil {
+		return fmt.Errorf("problem running manager: %w", err)
 	}
-
-	return ctrl.Run(ctx)
+	return nil
 }
 
 func parseIsolationTaint(taintStr string) (*corev1.Taint, error) {
@@ -142,21 +191,4 @@ func parseIsolationTaint(taintStr string) (*corev1.Taint, error) {
 		Value:  value,
 		Effect: effect,
 	}, nil
-}
-
-func buildKubeConfig(kubeconfigPath string) (*rest.Config, error) {
-	if kubeconfigPath != "" {
-		return clientcmd.BuildConfigFromFlags("", kubeconfigPath)
-	}
-
-	config, err := rest.InClusterConfig()
-	if err == nil {
-		return config, nil
-	}
-
-	slog.Info("In-cluster config failed, trying default local kubeconfig", "error", err)
-	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
-	configOverrides := &clientcmd.ConfigOverrides{}
-	kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
-	return kubeConfig.ClientConfig()
 }

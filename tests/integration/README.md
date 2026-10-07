@@ -22,6 +22,13 @@ Composed orchestrator integration suite. Installs BOTH official Helm charts (sna
 
 Uses a 2-node topology: `TEST_NODE_SAMPLERS` for the samplers group, `TEST_NODE_TRAINERS` for the trainers group (one GPU per node, separate nodes). `exclusiveLabel` temporarily removes group labels from other nodes so pods land only on the designated test nodes.
 
+### donor-controller (phase: donor)
+
+Hermetic integration suite for the donor controller, covering scenarios S0 through S14 (node sharing, multi-group accumulation, hold, unshare with idle TTL clock, E7 reshare convergence, controller restart clock preservation, W4 orphan virtual node cleanup, host death, SSA create guard, dry-run mode, managedFields ownership, foreign taint preservation, Kubernetes events audit trail, and leader election lease acquisition).
+
+**Hermetic / No GPU required:** The suite creates isolated fake `Node` objects (`dc-e2e-<runid>-h1..h3`) and virtual nodes with `spec.providerID = virtual-kubelet://<name>`. Donor pods bind to fake hosts via `spec.nodeName` and stay `Pending` (sufficient for controller observation). Real schedulable nodes are not required for test workloads.
+**Requirements:** Cluster-admin permissions to create and manage `Node` objects cluster-wide.
+
 ## Layout
 
 - `run.sh` -- launcher (build images, install chart fixtures, deploy runner, copy source, build `make standalone`, install the Python client, `go test`, cleanup)
@@ -31,6 +38,7 @@ Uses a 2-node topology: `TEST_NODE_SAMPLERS` for the samplers group, `TEST_NODE_
 - `orchestrator/` -- the orchestrator suite: `orchestrator_test.go` / `harness.go`
 - `orchestrator/scenarios/` -- scenario drivers shared by both the simulate tier (unit tests) and the composed suite
 - `orchestrator/simulate/` -- fakes tier: in-process orchestrator with fake K8s, runs on every PR
+- `donor-controller/` -- the donor controller suite: `donor_test.go` / `scenarios.go` / `fixtures.go` / `env.go`
 
 ## Adding a test
 
@@ -106,18 +114,20 @@ TEST_NODE=<gpu-node> TEST_NODE_SAMPLERS=<gpu-node-1> TEST_NODE_TRAINERS=<gpu-nod
                      unless --build)
 --orch-image IMAGE   Orchestrator image (required for orchestrator unless
                      --build)
+--donor-image IMAGE  Donor-controller image (required for donor unless
+                     --build)
 --build              Build images from the working directory via Cloud Build
                      (requires --project); explicit --agent-image /
-                     --orch-image overrides
+                     --orch-image / --donor-image overrides
 --project PROJECT    GCP project (required with --build for image pushes;
                      also used by gcloud get-credentials with --cluster)
 --cluster CLUSTER    GKE cluster name (optional; omit to use current
                      kubectl context)
 --zone ZONE          GKE cluster zone (optional)
 --model MODEL        Model to load (default: Qwen/Qwen2.5-0.5B)
---phase PHASE        "standalone", "k8s", "orchestrator", "tpu", "both"
-                     (default, = standalone+k8s), or "all"
-                     (= standalone+k8s+orch; tpu is separate)
+--phase PHASE        "standalone", "k8s", "orchestrator", "donor", "tpu",
+                     "both" (default, = standalone+k8s), or "all"
+                     (= standalone+k8s+orch+donor; tpu is separate)
 --skip-cleanup       Leave the test-runner pod and chart fixtures running
                      for debugging
 ```
@@ -133,6 +143,12 @@ Environment:
   GPU node for the samplers group (must be different from `TEST_NODE_TRAINERS`).
 - `TEST_NODE_TRAINERS=<node-name>` -- required for the orchestrator phase.
   GPU node for the trainers group (must be different from `TEST_NODE_SAMPLERS`).
+- `DONOR_NAMESPACE=<ns>` -- optional namespace for the donor-controller deployment
+  (default: `timeslice-system`).
+- `DONOR_IDLE_TTL=<duration>` -- idle TTL duration for the donor controller
+  (default: `20s`).
+- `DONOR_ISOLATION_TAINT=<taint>` -- isolation taint key/value/effect
+  (default: `timeslice.io/shared=true:NoSchedule`).
 - `TPU_WORKLOAD_IMAGE=<image>` -- required for the tpu phase: an image with
   python3 + JAX for the TPU node.
 - `TPU_CHECKPOINT_URI=<uri>` -- required for the tpu phase unless

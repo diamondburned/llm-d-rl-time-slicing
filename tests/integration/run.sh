@@ -30,6 +30,7 @@ HELM="${HELM:-helm}"
 
 AGENT_IMAGE=""
 ORCH_IMAGE=""
+DONOR_IMAGE=""
 PROJECT=""
 CLUSTER=""
 ZONE=""
@@ -40,6 +41,7 @@ SKIP_CLEANUP=false
 NEED_STANDALONE=false
 NEED_SA_CHART=false
 NEED_ORCH_CHART=false
+NEED_DONOR_CHART=false
 NEED_TPU=false
 # CHART_AGENT_PORT lets the chart-deployed agent bind a non-default port so
 # the suite can coexist with an unrelated agent on 9001 (hostNetwork).
@@ -49,6 +51,7 @@ while [[ $# -gt 0 ]]; do
   case $1 in
     --agent-image)  AGENT_IMAGE="$2"; shift 2 ;;
     --orch-image)   ORCH_IMAGE="$2"; shift 2 ;;
+    --donor-image)  DONOR_IMAGE="$2"; shift 2 ;;
     --build)        BUILD=true; shift ;;
     --project)      PROJECT="$2"; shift 2 ;;
     --cluster)      CLUSTER="$2"; shift 2 ;;
@@ -61,7 +64,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 usage() {
-  echo "Usage: $0 [--agent-image IMAGE] [--orch-image IMAGE] [--build --project PROJECT] [--cluster CLUSTER --zone ZONE] [--model MODEL] [--phase standalone|k8s|both|orchestrator|tpu|all]"
+  echo "Usage: $0 [--agent-image IMAGE] [--orch-image IMAGE] [--donor-image IMAGE] [--build --project PROJECT] [--cluster CLUSTER --zone ZONE] [--model MODEL] [--phase standalone|k8s|both|orchestrator|donor|tpu|all]"
   echo ""
   echo "  --cluster/--zone/--project are optional; omit them to use your current kubectl context."
   echo "  --project is required with --build (Cloud Build needs it for the image registry)."
@@ -73,9 +76,10 @@ case "$PHASE" in
   both)         RUN_PATTERN='^(TestStandalone|TestK8s)$'
                 NEED_STANDALONE=true; NEED_SA_CHART=true ;;
   orchestrator) RUN_PATTERN='^TestOrchestrator$';       NEED_SA_CHART=true; NEED_ORCH_CHART=true ;;
+  donor)        RUN_PATTERN='^TestDonorController$';    NEED_DONOR_CHART=true ;;
   tpu)          RUN_PATTERN='^TestTpu$';                NEED_STANDALONE=true; NEED_TPU=true ;;
-  all)          RUN_PATTERN='^(TestStandalone|TestK8s|TestOrchestrator)$'
-                NEED_STANDALONE=true; NEED_SA_CHART=true; NEED_ORCH_CHART=true ;;
+  all)          RUN_PATTERN='^(TestStandalone|TestK8s|TestOrchestrator|TestDonorController)$'
+                NEED_STANDALONE=true; NEED_SA_CHART=true; NEED_ORCH_CHART=true; NEED_DONOR_CHART=true ;;
   *) echo "Unknown phase: $PHASE"; usage; exit 1 ;;
 esac
 # TEST_RUN_PATTERN overrides the phase-derived go test -run pattern (e.g. a
@@ -103,6 +107,11 @@ if [[ "$NEED_SA_CHART" == "true" && -z "$AGENT_IMAGE" && "$BUILD" != "true" ]]; 
 fi
 if [[ "$NEED_ORCH_CHART" == "true" && -z "$ORCH_IMAGE" && "$BUILD" != "true" ]]; then
   echo "Error: --orch-image (or --build) is required for the orchestrator phase (the orchestrator chart installs it)"
+  usage
+  exit 1
+fi
+if [[ "$NEED_DONOR_CHART" == "true" && -z "$DONOR_IMAGE" && "$BUILD" != "true" ]]; then
+  echo "Error: --donor-image (or --build) is required for the donor phase (the donor-controller chart installs it)"
   usage
   exit 1
 fi
@@ -153,6 +162,9 @@ cleanup() {
   fi
   if [[ "$NEED_SA_CHART" == "true" ]]; then
     $HELM uninstall sa-chart-test -n timeslice-system 2>/dev/null || true
+  fi
+  if [[ "$NEED_DONOR_CHART" == "true" ]]; then
+    $HELM uninstall donor-chart-test -n timeslice-system 2>/dev/null || true
   fi
 }
 
@@ -209,6 +221,14 @@ if [[ "$BUILD" == "true" && "$NEED_ORCH_CHART" == "true" && -z "$ORCH_IMAGE" ]];
     "$REPO_ROOT"
 fi
 
+if [[ "$BUILD" == "true" && "$NEED_DONOR_CHART" == "true" && -z "$DONOR_IMAGE" ]]; then
+  DONOR_IMAGE="gcr.io/${PROJECT}/donor-controller:${BUILD_TAG}"
+  log "Building ${DONOR_IMAGE} from the working directory (Cloud Build)..."
+  gcloud builds submit --project "$PROJECT" --config="${REPO_ROOT}/cloudbuild-image.yaml" \
+    --substitutions="_IMAGE=${DONOR_IMAGE},_DOCKERFILE=docker/donor-controller/Dockerfile" \
+    "$REPO_ROOT"
+fi
+
 if [[ "$NEED_SA_CHART" == "true" ]]; then
   # The chart templates pin their namespace to timeslice-system.
   $K create namespace timeslice-system --dry-run=client -o yaml | $K apply -f -
@@ -255,6 +275,25 @@ if [[ "$NEED_ORCH_CHART" == "true" ]]; then
   wait_chart_pods_ready "$ORCH_SELECTOR" || chart_failure "orchestrator" "$ORCH_SELECTOR"
 fi
 
+if [[ "$NEED_DONOR_CHART" == "true" ]]; then
+  $K create namespace timeslice-system --dry-run=client -o yaml | $K apply -f -
+  log "Installing the official donor-controller chart..."
+  DONOR_HELM_ARGS=(
+    -n timeslice-system
+    --set fullnameOverride=donor-chart-test
+    --set image.repository="${DONOR_IMAGE%:*}"
+    --set image.tag="${DONOR_IMAGE##*:}"
+    --set image.pullPolicy=Always
+    --set controller.idleTTL=20s
+    --set controller.resyncPeriod=30s
+    --set controller.isolationTaint="timeslice.io/shared=true:NoSchedule"
+  )
+  $HELM upgrade --install donor-chart-test "${REPO_ROOT}/deploy/donor-controller" "${DONOR_HELM_ARGS[@]}"
+  DONOR_SELECTOR="app.kubernetes.io/name=donor-controller,app.kubernetes.io/instance=donor-chart-test"
+  log "Waiting for the donor-controller Deployment pod to become Ready..."
+  wait_chart_pods_ready "$DONOR_SELECTOR" || chart_failure "donor-controller" "$DONOR_SELECTOR"
+fi
+
 # The tpu phase ships the gVisor tpucheckpoint CLI to the agent pod via the
 # repo copy below (the runner image has no gcloud).
 if [[ "$NEED_TPU" == "true" && -n "${TPU_CHECKPOINT_URI:-}" ]]; then
@@ -288,6 +327,8 @@ SA_CHART_DEPLOYED=""
 [[ "$NEED_SA_CHART" == "true" ]] && SA_CHART_DEPLOYED=1
 ORCH_CHART_DEPLOYED=""
 [[ "$NEED_ORCH_CHART" == "true" ]] && ORCH_CHART_DEPLOYED=1
+DONOR_CHART_DEPLOYED=""
+[[ "$NEED_DONOR_CHART" == "true" ]] && DONOR_CHART_DEPLOYED=1
 EXIT=0
 $K exec test-runner -- env "MODEL=${MODEL}" "TEST_NODE=${TEST_NODE:-}" \
   "TEST_NODE_SAMPLERS=${TEST_NODE_SAMPLERS:-}" \
@@ -295,6 +336,10 @@ $K exec test-runner -- env "MODEL=${MODEL}" "TEST_NODE=${TEST_NODE:-}" \
   "TEST_NODE_SAMPLERS_B=${TEST_NODE_SAMPLERS_B:-}" \
   "SA_CHART_DEPLOYED=${SA_CHART_DEPLOYED}" \
   "ORCH_CHART_DEPLOYED=${ORCH_CHART_DEPLOYED}" \
+  "DONOR_CHART_DEPLOYED=${DONOR_CHART_DEPLOYED}" \
+  "DONOR_NAMESPACE=timeslice-system" \
+  "DONOR_IDLE_TTL=20s" \
+  "DONOR_ISOLATION_TAINT=timeslice.io/shared=true:NoSchedule" \
   "CHART_AGENT_PORT=${CHART_AGENT_PORT}" \
   "TPU_WORKLOAD_IMAGE=${TPU_WORKLOAD_IMAGE:-}" \
   "TPU_LIBTPU_URI=${TPU_LIBTPU_URI:-}" \

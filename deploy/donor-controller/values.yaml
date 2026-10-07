@@ -3,6 +3,8 @@ image:
   tag: latest
   pullPolicy: IfNotPresent
 
+replicaCount: 1
+
 imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
@@ -14,6 +16,9 @@ controller:
   dryRun: false
   # e.g. timeslice.io/shared=true:NoSchedule; empty disables W5
   isolationTaint: ""
+  leaderElect: true
+  metricsBindAddress: ":8080"
+  healthProbeBindAddress: ":8081"
 
 extraArgs: []
 

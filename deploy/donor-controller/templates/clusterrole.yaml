@@ -21,4 +21,10 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
+
+  # Events:
+  # - create, patch: event recording for applied/tainted/untainted/deleted mutations
+  - apiGroups: ["", "events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "patch"]
 {{- end }}

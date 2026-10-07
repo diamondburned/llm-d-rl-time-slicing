@@ -1,7 +1,7 @@
 # Donor Controller Helm Chart
 
-> [!WARNING]
-> This chart and controller are an experimental prototype / draft. The controller does not currently implement leader election. It must run with `replicas: 1` and `strategy.type: Recreate` to avoid concurrent controller instances mutating the same nodes.
+> [!NOTE]
+> Leader election is enabled by default via `coordination.k8s.io` Leases, allowing safe RollingUpdate deployments and multi-replica standby setups.
 
 This directory contains the Helm chart for deploying the donor controller in a Kubernetes cluster.
 
@@ -19,6 +19,7 @@ The donor controller coordinates node donation for RL time-slicing workloads. It
 
 | Key | Type | Default | Description |
 |---|---|---|---|
+| `replicaCount` | int | `1` | Number of controller replicas (leader election ensures single active leader) |
 | `image.repository` | string | `ghcr.io/llm-d-incubation/llm-d-rl-time-slicing/donor-controller` | Image repository |
 | `image.tag` | string | `"latest"` | Image tag (defaults to `Chart.appVersion` if empty) |
 | `image.pullPolicy` | string | `"IfNotPresent"` | Image pull policy |
@@ -30,6 +31,9 @@ The donor controller coordinates node donation for RL time-slicing workloads. It
 | `controller.resyncPeriod` | string | `"10m"` | Informer resync period |
 | `controller.dryRun` | bool | `false` | When true, logs intended mutations without making live API calls |
 | `controller.isolationTaint` | string | `""` | Isolation taint for shared nodes (e.g. `timeslice.io/shared=true:NoSchedule`); empty disables taint management |
+| `controller.leaderElect` | bool | `true` | Enable leader election via `coordination.k8s.io` Lease |
+| `controller.metricsBindAddress` | string | `":8080"` | Metrics endpoint bind address (`"0"` disables) |
+| `controller.healthProbeBindAddress` | string | `":8081"` | Health probe endpoint bind address |
 | `extraArgs` | list | `[]` | Extra command-line arguments to pass to the binary |
 | `resources.requests.cpu` | string | `"50m"` | CPU request |
 | `resources.requests.memory` | string | `"64Mi"` | Memory request |

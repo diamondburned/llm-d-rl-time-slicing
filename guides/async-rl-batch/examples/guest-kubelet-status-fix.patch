@@ -1,0 +1,22 @@
+diff --git a/guest-kubelet/internal/backend/mirror/status.go b/guest-kubelet/internal/backend/mirror/status.go
+index 5fa7c8b..5cd9db0 100644
+--- a/guest-kubelet/internal/backend/mirror/status.go
++++ b/guest-kubelet/internal/backend/mirror/status.go
+@@ -60,6 +60,17 @@ func TranslateStatusWith(guest, mirrorPod *corev1.Pod, rd Readiness) *corev1.Pod
+ 	if st.Phase == "" {
+ 		st.Phase = corev1.PodPending
+ 	}
++	// The mirror's per-container resource fields describe the mirror's own resources
++	// (timeslice.io/gpu-shadow, capped requests). The API server rejects them on the guest:
++	// allocatedResourcesStatus must name one of the guest container's requests (enforced on
++	// GKE 1.36). Drop them rather than copy the mirror's view.
++	for _, list := range [][]corev1.ContainerStatus{st.ContainerStatuses, st.InitContainerStatuses} {
++		for i := range list {
++			list[i].AllocatedResources = nil
++			list[i].AllocatedResourcesStatus = nil
++			list[i].Resources = nil
++		}
++	}
+ 	if rd != nil {
+ 		applyReadiness(&st, guest, rd)
+ 	}

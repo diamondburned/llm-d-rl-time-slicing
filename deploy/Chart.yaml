@@ -15,4 +15,7 @@ dependencies:
     version: 25.8.0
     repository: "https://helm.ngc.nvidia.com/nvidia"
     condition: nvidia-dra-driver-gpu.enabled
-
+  - name: donor-controller
+    version: 0.1.0
+    repository: "file://./donor-controller"
+    condition: donor-controller.enabled

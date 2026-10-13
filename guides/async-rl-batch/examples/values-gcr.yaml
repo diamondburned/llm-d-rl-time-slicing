@@ -1,0 +1,25 @@
+# Overrides for #208's parent chart: every platform image from our own build
+# (gcr.io/gke-gkit-dev/diamondburned/<component>:pr208-9f82ea2).
+global:
+  imageTag: pr208-9f82ea2
+timesliceorchestrator:
+  image:
+    repository: gcr.io/gke-gkit-dev/diamondburned/timesliceorchestrator
+snapshot-agent:
+  image:
+    repository: gcr.io/gke-gkit-dev/diamondburned/snapshot-agent
+guest-kubelet:
+  image:
+    repository: gcr.io/gke-gkit-dev/diamondburned/guest-kubelet
+gpu-shadow:
+  image:
+    repository: gcr.io/gke-gkit-dev/diamondburned/gpu-shadow-plugin
+timeslice-webhook:
+  image:
+    repository: gcr.io/gke-gkit-dev/diamondburned/timeslice-webhook
+  rlIntegration:
+    image:
+      repository: gcr.io/gke-gkit-dev/diamondburned/rl-integration
+donor-controller:
+  image:
+    repository: gcr.io/gke-gkit-dev/diamondburned/donor-controller-pr208

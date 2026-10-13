@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: guest-vllm
+  namespace: rl-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: guest-vllm
+  template:
+    metadata:
+      labels:
+        app: guest-vllm
+        timeslice.io/guest: "true"
+      annotations:
+        # Suspend through vLLM's sleep API (weights to host RAM, KV cache
+        # dropped) instead of cuda-checkpoint.
+        timeslice.io/backend: app_endpoint
+    spec:
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: vllm
+        image: vllm/vllm-openai:v0.9.2
+        command: ["vllm", "serve", "Qwen/Qwen2.5-0.5B-Instruct", "--port", "8000", "--gpu-memory-utilization", "0.6", "--max-model-len", "4096",
+                  "--enable-sleep-mode"]   # app_endpoint: sleep on reclaim, wake on lend
+        env:
+        - name: VLLM_SERVER_DEV_MODE   # app_endpoint: exposes /sleep and /wake_up
+          value: "1"
+        ports:
+        - containerPort: 8000
+        readinessProbe:
+          httpGet: {path: /health, port: 8000}
+          periodSeconds: 2
+          failureThreshold: 2
+        resources:
+          requests:
+            # The virtual node offers what the host has left after the
+            # trainer's requests (guest-budget: computed); keep this small.
+            cpu: "500m"
+            memory: "8Gi"
+            nvidia.com/gpu: "1"
+          limits:
+            nvidia.com/gpu: "1"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: guest-vllm
+  namespace: rl-demo
+spec:
+  selector:
+    app: guest-vllm
+  ports:
+  - port: 8000
+    targetPort: 8000

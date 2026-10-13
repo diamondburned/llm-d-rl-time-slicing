@@ -1,0 +1,10 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: [build, -f, guest-kubelet/Dockerfile, -t, 'gcr.io/$PROJECT_ID/diamondburned/guest-kubelet:${_TAG}', .]
+images:
+  - 'gcr.io/$PROJECT_ID/diamondburned/guest-kubelet:${_TAG}'
+substitutions:
+  _TAG: pr208-9f82ea2-fix1
+timeout: 1800s
+options:
+  machineType: E2_HIGHCPU_8

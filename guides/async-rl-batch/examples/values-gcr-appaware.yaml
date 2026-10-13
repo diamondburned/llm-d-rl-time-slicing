@@ -1,0 +1,36 @@
+# Overrides for the app-aware platform chart (Edwinhr716 ws/slim/appaware-trainer @ cc29903):
+# every platform image from our build. This chart has no global.imageTag, so
+# each component sets its own tag. The RL pods run our prebuilt verl image,
+# which has the same commit's timeslice packages built in, so the webhook's
+# package injection is turned off.
+timesliceorchestrator:
+  image:
+    repository: gcr.io/gke-gkit-dev/diamondburned/timesliceorchestrator
+    tag: appaware-cc29903
+snapshot-agent:
+  image:
+    repository: gcr.io/gke-gkit-dev/diamondburned/snapshot-agent
+    tag: appaware-cc29903
+guest-kubelet:
+  image:
+    repository: gcr.io/gke-gkit-dev/diamondburned/guest-kubelet
+    tag: appaware-cc29903
+gpu-shadow:
+  image:
+    repository: gcr.io/gke-gkit-dev/diamondburned/gpu-shadow-plugin
+    tag: appaware-cc29903
+timeslice-webhook:
+  image:
+    repository: gcr.io/gke-gkit-dev/diamondburned/timeslice-webhook
+    tag: appaware-cc29903
+  rlIntegration:
+    enabled: false
+    image:
+      repository: gcr.io/gke-gkit-dev/diamondburned/rl-integration
+      tag: appaware-cc29903
+donor-controller:
+  image:
+    repository: gcr.io/gke-gkit-dev/diamondburned/donor-controller-pr208
+    tag: appaware-cc29903
+  flags:
+    era-ttl: 3m

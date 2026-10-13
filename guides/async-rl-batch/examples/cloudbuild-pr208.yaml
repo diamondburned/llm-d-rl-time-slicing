@@ -1,0 +1,53 @@
+# Builds every image #208's chart uses from the repository root, in parallel,
+# and pushes them to gcr.io/$PROJECT_ID/diamondburned/<component>:${_TAG}.
+# Usage (from the PR checkout):
+#   gcloud builds submit --project gke-gkit-dev \
+#     --config <this file> --substitutions=_TAG=pr208-9f82ea2 .
+steps:
+  - id: timesliceorchestrator
+    name: gcr.io/cloud-builders/docker
+    waitFor: ['-']
+    args: [build, -f, docker/timesliceorchestrator/Dockerfile, -t, 'gcr.io/$PROJECT_ID/diamondburned/timesliceorchestrator:${_TAG}', .]
+  - id: snapshot-agent
+    name: gcr.io/cloud-builders/docker
+    waitFor: ['-']
+    args: [build, -f, docker/snapshot-agent/Dockerfile, -t, 'gcr.io/$PROJECT_ID/diamondburned/snapshot-agent:${_TAG}', .]
+  - id: guest-kubelet
+    name: gcr.io/cloud-builders/docker
+    waitFor: ['-']
+    args: [build, -f, guest-kubelet/Dockerfile, -t, 'gcr.io/$PROJECT_ID/diamondburned/guest-kubelet:${_TAG}', .]
+  - id: gpu-shadow-plugin
+    name: gcr.io/cloud-builders/docker
+    waitFor: ['-']
+    args: [build, -f, guest-kubelet/Dockerfile.gpu-shadow, -t, 'gcr.io/$PROJECT_ID/diamondburned/gpu-shadow-plugin:${_TAG}', .]
+  - id: timeslice-webhook
+    name: gcr.io/cloud-builders/docker
+    waitFor: ['-']
+    args: [build, -f, docker/timeslice-webhook/Dockerfile, -t, 'gcr.io/$PROJECT_ID/diamondburned/timeslice-webhook:${_TAG}', .]
+  - id: donor-controller
+    name: gcr.io/cloud-builders/docker
+    waitFor: ['-']
+    args: [build, -f, deploy/donor-controller/Dockerfile, -t, 'gcr.io/$PROJECT_ID/diamondburned/donor-controller-pr208:${_TAG}', .]
+  - id: rl-integration
+    name: gcr.io/cloud-builders/docker
+    waitFor: ['-']
+    args: [build, -f, docker/rl-integration/Dockerfile, -t, 'gcr.io/$PROJECT_ID/diamondburned/rl-integration:${_TAG}', .]
+  - id: verl
+    name: gcr.io/cloud-builders/docker
+    waitFor: ['-']
+    args: [build, -f, docker/verl/Dockerfile, -t, 'gcr.io/$PROJECT_ID/diamondburned/verl:${_TAG}', .]
+images:
+  - 'gcr.io/$PROJECT_ID/diamondburned/timesliceorchestrator:${_TAG}'
+  - 'gcr.io/$PROJECT_ID/diamondburned/snapshot-agent:${_TAG}'
+  - 'gcr.io/$PROJECT_ID/diamondburned/guest-kubelet:${_TAG}'
+  - 'gcr.io/$PROJECT_ID/diamondburned/gpu-shadow-plugin:${_TAG}'
+  - 'gcr.io/$PROJECT_ID/diamondburned/timeslice-webhook:${_TAG}'
+  - 'gcr.io/$PROJECT_ID/diamondburned/donor-controller-pr208:${_TAG}'
+  - 'gcr.io/$PROJECT_ID/diamondburned/rl-integration:${_TAG}'
+  - 'gcr.io/$PROJECT_ID/diamondburned/verl:${_TAG}'
+substitutions:
+  _TAG: pr208-9f82ea2
+timeout: 7200s
+options:
+  machineType: E2_HIGHCPU_32
+  diskSizeGb: 400

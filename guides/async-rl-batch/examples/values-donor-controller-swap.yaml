@@ -1,0 +1,22 @@
+# Our donor controller (deploy/donor-controller) in place of the umbrella
+# chart's, against the app-aware stack (values-gcr-appaware.yaml with
+# donor-controller.enabled=false). See README step 10.
+image:
+  repository: gcr.io/gke-gkit-dev/diamondburned/donor-controller
+  tag: swap-stalefence
+  pullPolicy: Always
+
+# Two replicas behind leader election, both on the CPU pool, so the
+# controller never dies with a GPU host it should clean up after.
+replicaCount: 2
+nodeSelector:
+  cloud.google.com/gke-nodepool: default-pool
+
+controller:
+  idleTTL: 1m
+  # Off, like the umbrella chart's controller.
+  isolationTaint: ""
+  # Hold a shared host while its group's lock is LOCKED, SWITCHING or
+  # VACATING.
+  orchestratorAddr: timeslice-timesliceorchestrator.timeslice-system:50051
+  groupLockPollInterval: 2s

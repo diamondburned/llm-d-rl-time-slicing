@@ -1,0 +1,33 @@
+{{- if .Values.rbac.create -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "donor-controller.fullname" . }}
+  labels:
+    {{- include "donor-controller.labels" . | nindent 4 }}
+rules:
+  # Nodes:
+  # - get: live precondition check for NodeAbsent (W4)
+  # - list, watch: informer for all nodes (W1-W4)
+  # - patch: server-side apply for metadata (labels/annotations) and merge-patch for taints (W1-W3, W5)
+  # - patch, delete: release virtual nodes of a dead host (W4): delete, then
+  #   remove the timeslice.io/virtual-node-protection finalizer
+  # - patch: remove a stale timeslice.io/gpu-fence taint (JSON patch)
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch", "patch", "delete"]
+
+  # Pods:
+  # - get, list, watch: informer for all pods across all namespaces (donor
+  #   pods for W1-W3, mirror pods for stale fences) and live precondition
+  #   listing before unsharing (W3/unshare) and before removing a stale fence
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+
+  # Events:
+  # - create, patch: event recording for applied/tainted/untainted/deleted mutations
+  - apiGroups: ["", "events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+{{- end }}

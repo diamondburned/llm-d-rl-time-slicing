@@ -1,0 +1,284 @@
+apiVersion: ray.io/v1
+kind: RayJob
+metadata:
+  name: tiny-rl
+  namespace: rl-demo
+spec:
+  entrypoint: |
+    python3 -m verl.experimental.fully_async_policy.fully_async_main \
+      data.train_files=/tmp/data/train.parquet \
+      data.val_files=/tmp/data/val.parquet \
+      data.prompt_key=prompt \
+      data.truncation=left \
+      data.max_prompt_length=512 \
+      data.max_response_length=256 \
+      data.train_batch_size=0 \
+      data.gen_batch_size=1 \
+      data.return_raw_chat=True \
+      actor_rollout_ref.model.path=Qwen/Qwen2.5-0.5B-Instruct \
+      actor_rollout_ref.model.use_remove_padding=True \
+      actor_rollout_ref.model.enable_gradient_checkpointing=True \
+      actor_rollout_ref.hybrid_engine=False \
+      actor_rollout_ref.actor.strategy=fsdp \
+      actor_rollout_ref.actor.ppo_mini_batch_size=64 \
+      actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
+      actor_rollout_ref.actor.use_kl_loss=False \
+      actor_rollout_ref.actor.kl_loss_coef=0.0 \
+      actor_rollout_ref.actor.entropy_coeff=0 \
+      actor_rollout_ref.actor.grad_clip=1.0 \
+      actor_rollout_ref.actor.loss_agg_mode=token-mean \
+      actor_rollout_ref.actor.use_dynamic_bsz=True \
+      actor_rollout_ref.actor.ppo_max_token_len_per_gpu=4096 \
+      actor_rollout_ref.actor.optim.lr=1e-6 \
+      actor_rollout_ref.actor.optim.lr_warmup_steps=-1 \
+      actor_rollout_ref.actor.fsdp_config.param_offload=False \
+      actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
+      actor_rollout_ref.ref.log_prob_use_dynamic_bsz=True \
+      actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=4096 \
+      actor_rollout_ref.rollout.name=vllm \
+      actor_rollout_ref.rollout.mode=async \
+      actor_rollout_ref.rollout.n=8 \
+      actor_rollout_ref.rollout.calculate_log_probs=True \
+      actor_rollout_ref.rollout.checkpoint_engine.backend=nccl \
+      +actor_rollout_ref.rollout.checkpoint_engine.engine_kwargs.nccl.rebuild_group=True \
+      actor_rollout_ref.rollout.gpu_memory_utilization=0.5 \
+      actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
+      actor_rollout_ref.rollout.max_model_len=1024 \
+      actor_rollout_ref.rollout.max_num_batched_tokens=1024 \
+      actor_rollout_ref.rollout.enable_chunked_prefill=True \
+      actor_rollout_ref.rollout.temperature=1.0 \
+      actor_rollout_ref.rollout.top_p=1.0 \
+      actor_rollout_ref.rollout.top_k=-1 \
+      algorithm.adv_estimator=grpo \
+      algorithm.use_kl_in_reward=False \
+      algorithm.kl_ctrl.kl_coef=0.0 \
+      trainer.logger="['console']" \
+      trainer.val_before_train=False \
+      trainer.save_freq=-1 \
+      trainer.resume_mode=disable \
+      trainer.nnodes=1 \
+      trainer.n_gpus_per_node=1 \
+      trainer.total_epochs=1 \
+      trainer.test_freq=-1 \
+      trainer.project_name=timeslice-demo \
+      trainer.experiment_name=tiny-math \
+      trainer.default_local_dir=/tmp/results \
+      rollout.nnodes=1 \
+      rollout.n_gpus_per_node=1 \
+      rollout.total_rollout_steps=160 \
+      async_training.staleness_threshold=8 \
+      async_training.trainer_name=timeslice \
+      async_training.trigger_parameter_sync_step=1 \
+      "ray_pg_extra_resources={trainer_pool: {trainer_node: 1}, rollout_pool: {rollout_node: 1}}"
+  rayClusterSpec:
+    rayVersion: "2.37.0"
+    headGroupSpec:
+      rayStartParams:
+        dashboard-host: 0.0.0.0
+      template:
+        spec:
+          nodeSelector:
+            cloud.google.com/gke-nodepool: default-pool
+          initContainers:
+          - name: data-prep
+            image: python:3.10-slim
+            command: ["/bin/bash", "-c"]
+            args:
+            - |
+              pip install --quiet pandas pyarrow huggingface_hub
+              python3 - <<'EOF'
+              import os, pandas as pd
+              from huggingface_hub import hf_hub_download
+              os.makedirs("/tmp/data", exist_ok=True)
+              local = hf_hub_download(repo_id="openai/gsm8k", filename="main/train-00000-of-00001.parquet", repo_type="dataset")
+              df = pd.read_parquet(local)
+              df = df.head(288) # 256 train, 32 val
+              # verl's gsm8k format (examples/data_preprocess/gsm8k.py): the
+              # reward (verl.utils.reward_score.gsm8k) compares the number
+              # after "####" in the response with the bare final answer.
+              inst = 'Let\'s think step by step and output the final answer after "####".'
+              df["data_source"] = "openai/gsm8k"
+              df["prompt"] = df["question"].apply(lambda q: [{"role": "user", "content": q + " " + inst}])
+              df["ability"] = "math"
+              df["reward_model"] = df["answer"].apply(lambda a: {"style": "rule", "ground_truth": a.split("####")[-1].strip().replace(",", "")})
+              df["extra_info"] = [{"split": "train", "index": i} for i in range(len(df))]
+              train = df.iloc[:256]
+              val = df.iloc[256:]
+              train.to_parquet("/tmp/data/train.parquet", index=False)
+              val.to_parquet("/tmp/data/val.parquet", index=False)
+              EOF
+            volumeMounts:
+            - name: data
+              mountPath: /tmp/data
+          containers:
+          - name: ray-head
+            image: ${VERL_IMAGE}
+            resources:
+              requests:
+                cpu: "2"
+                memory: "8Gi"
+            volumeMounts:
+            - name: data
+              mountPath: /tmp/data
+          volumes:
+          - name: data
+            emptyDir: {}
+    workerGroupSpecs:
+    - groupName: trainer
+      replicas: 1
+      minReplicas: 1
+      maxReplicas: 1
+      rayStartParams:
+        num-gpus: "1"
+        # Logical CPUs for Ray, above the pod's CPU request: verl's
+        # fully-async trainer/rollouter actor asks for 10 CPUs, and the
+        # worker placement group for 3 more on the same node.
+        num-cpus: "16"
+        resources: "'{\"trainer_node\": 100}'"
+      template:
+        metadata:
+          labels:
+            timeslice.io/donor: "true"
+            # A stable identity across resubmits. Without it the webhook derives
+            # the group from the RayCluster name, which KubeRay suffixes randomly
+            # per submission, so a resubmitted job's new group conflicts with the
+            # old group's label on the host until that era ends.
+            timeslice.io/job-id: tiny-rl
+            timeslice.io/group: rl-demo.tiny-rl.trainer
+          annotations:
+            # The trainer parks itself (optimizer, model and gradients to host
+            # RAM through verl's offload control) instead of being
+            # cuda-checkpointed by the snapshot agent.
+            timeslice.io/backend: app_channel
+        spec:
+          nodeSelector:
+            cloud.google.com/gke-nodepool: l4-trainer
+          tolerations:
+          - key: nvidia.com/gpu
+            operator: Exists
+            effect: NoSchedule
+          initContainers:
+          - name: data-prep
+            image: python:3.10-slim
+            command: ["/bin/bash", "-c"]
+            args:
+            - |
+              pip install --quiet pandas pyarrow huggingface_hub
+              python3 - <<'EOF'
+              import os, pandas as pd
+              from huggingface_hub import hf_hub_download
+              os.makedirs("/tmp/data", exist_ok=True)
+              local = hf_hub_download(repo_id="openai/gsm8k", filename="main/train-00000-of-00001.parquet", repo_type="dataset")
+              df = pd.read_parquet(local)
+              df = df.head(288) # 256 train, 32 val
+              # verl's gsm8k format (examples/data_preprocess/gsm8k.py): the
+              # reward (verl.utils.reward_score.gsm8k) compares the number
+              # after "####" in the response with the bare final answer.
+              inst = 'Let\'s think step by step and output the final answer after "####".'
+              df["data_source"] = "openai/gsm8k"
+              df["prompt"] = df["question"].apply(lambda q: [{"role": "user", "content": q + " " + inst}])
+              df["ability"] = "math"
+              df["reward_model"] = df["answer"].apply(lambda a: {"style": "rule", "ground_truth": a.split("####")[-1].strip().replace(",", "")})
+              df["extra_info"] = [{"split": "train", "index": i} for i in range(len(df))]
+              train = df.iloc[:256]
+              val = df.iloc[256:]
+              train.to_parquet("/tmp/data/train.parquet", index=False)
+              val.to_parquet("/tmp/data/val.parquet", index=False)
+              EOF
+            volumeMounts:
+            - name: data
+              mountPath: /tmp/data
+          containers:
+          - name: ray-worker
+            image: ${VERL_IMAGE}
+            env:
+            - name: HF_HOME
+              value: "/tmp/hf"
+            - name: RUN_SECONDS
+              value: "1800"
+            resources:
+              requests:
+                # Leave a few cores for the guest kubelet's virtual node,
+                # which offers what the host has left (guest-budget: computed).
+                cpu: "11"
+                memory: "30Gi"
+                nvidia.com/gpu: "1"
+              limits:
+                memory: "30Gi"
+                nvidia.com/gpu: "1"
+            volumeMounts:
+            - name: data
+              mountPath: /tmp/data
+          volumes:
+          - name: data
+            emptyDir: {}
+    - groupName: rollout
+      replicas: 1
+      minReplicas: 1
+      maxReplicas: 1
+      rayStartParams:
+        num-gpus: "1"
+        # Logical CPUs for Ray, above the pod's CPU request: verl's
+        # fully-async trainer/rollouter actor asks for 10 CPUs, and the
+        # worker placement group for 3 more on the same node.
+        num-cpus: "16"
+        resources: "'{\"rollout_node\": 100}'"
+      template:
+        spec:
+          nodeSelector:
+            cloud.google.com/gke-nodepool: l4-rollout
+          tolerations:
+          - key: nvidia.com/gpu
+            operator: Exists
+            effect: NoSchedule
+          initContainers:
+          - name: data-prep
+            image: python:3.10-slim
+            command: ["/bin/bash", "-c"]
+            args:
+            - |
+              pip install --quiet pandas pyarrow huggingface_hub
+              python3 - <<'EOF'
+              import os, pandas as pd
+              from huggingface_hub import hf_hub_download
+              os.makedirs("/tmp/data", exist_ok=True)
+              local = hf_hub_download(repo_id="openai/gsm8k", filename="main/train-00000-of-00001.parquet", repo_type="dataset")
+              df = pd.read_parquet(local)
+              df = df.head(288) # 256 train, 32 val
+              # verl's gsm8k format (examples/data_preprocess/gsm8k.py): the
+              # reward (verl.utils.reward_score.gsm8k) compares the number
+              # after "####" in the response with the bare final answer.
+              inst = 'Let\'s think step by step and output the final answer after "####".'
+              df["data_source"] = "openai/gsm8k"
+              df["prompt"] = df["question"].apply(lambda q: [{"role": "user", "content": q + " " + inst}])
+              df["ability"] = "math"
+              df["reward_model"] = df["answer"].apply(lambda a: {"style": "rule", "ground_truth": a.split("####")[-1].strip().replace(",", "")})
+              df["extra_info"] = [{"split": "train", "index": i} for i in range(len(df))]
+              train = df.iloc[:256]
+              val = df.iloc[256:]
+              train.to_parquet("/tmp/data/train.parquet", index=False)
+              val.to_parquet("/tmp/data/val.parquet", index=False)
+              EOF
+            volumeMounts:
+            - name: data
+              mountPath: /tmp/data
+          containers:
+          - name: ray-worker
+            image: ${VERL_IMAGE}
+            env:
+            - name: HF_HOME
+              value: "/tmp/hf"
+            resources:
+              requests:
+                cpu: "6"
+                memory: "24Gi"
+                nvidia.com/gpu: "1"
+              limits:
+                memory: "24Gi"
+                nvidia.com/gpu: "1"
+            volumeMounts:
+            - name: data
+              mountPath: /tmp/data
+          volumes:
+          - name: data
+            emptyDir: {}

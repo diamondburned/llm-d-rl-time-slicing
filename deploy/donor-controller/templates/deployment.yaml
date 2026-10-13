@@ -1,0 +1,98 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "donor-controller.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "donor-controller.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "donor-controller.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "donor-controller.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "donor-controller.serviceAccountName" . }}
+      {{- if .Values.priorityClassName }}
+      priorityClassName: {{ .Values.priorityClassName | quote }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+          args:
+            - "--workers={{ .Values.controller.workers }}"
+            - "--idle-ttl={{ .Values.controller.idleTTL }}"
+            - "--resync-period={{ .Values.controller.resyncPeriod }}"
+            {{- if .Values.controller.dryRun }}
+            - "--dry-run"
+            {{- end }}
+            {{- if .Values.controller.isolationTaint }}
+            - "--isolation-taint={{ .Values.controller.isolationTaint }}"
+            {{- end }}
+            {{- if .Values.controller.orchestratorAddr }}
+            - "--orchestrator-addr={{ .Values.controller.orchestratorAddr }}"
+            {{- end }}
+            - "--group-lock-poll-interval={{ .Values.controller.groupLockPollInterval }}"
+            {{- /* Defaults here too: helm upgrade --reuse-values keeps an older release's values, which lack these keys. */}}
+            - "--clear-stale-fences={{ ne (toString .Values.controller.clearStaleFences) "false" }}"
+            - "--stale-fence-grace={{ .Values.controller.staleFenceGrace | default "1m" }}"
+            - "--leader-elect={{ .Values.controller.leaderElect }}"
+            - "--leader-election-namespace={{ .Release.Namespace }}"
+            - "--metrics-bind-address={{ .Values.controller.metricsBindAddress }}"
+            - "--health-probe-bind-address={{ .Values.controller.healthProbeBindAddress }}"
+            {{- with .Values.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

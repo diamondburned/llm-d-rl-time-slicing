@@ -7,6 +7,8 @@ ORCHESTRATOR_IMAGE ?= $(REGISTRY)/$(PROJECT_NAME)/timesliceorchestrator
 ORCHESTRATOR_DOCKERFILE ?= docker/timesliceorchestrator/Dockerfile
 SNAPSHOT_AGENT_IMAGE ?= $(REGISTRY)/$(PROJECT_NAME)/snapshot-agent
 SNAPSHOT_AGENT_DOCKERFILE ?= docker/snapshot-agent/Dockerfile
+DONOR_CONTROLLER_IMAGE ?= $(REGISTRY)/$(PROJECT_NAME)/donor-controller
+DONOR_CONTROLLER_DOCKERFILE ?= docker/donor-controller/Dockerfile
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 # amd64-only, same as CI: the snapshot-agent needs the x86_64 cuda-checkpoint
 # binary and a CGO build; the platform is adopted as a unit.
@@ -114,6 +116,27 @@ image-push-orchestrator: ## Build and push timesliceorchestrator container image
 		--tag $(ORCHESTRATOR_IMAGE):$(VERSION) \
 		--tag $(ORCHESTRATOR_IMAGE):latest \
 		-f $(ORCHESTRATOR_DOCKERFILE) \
+		.
+
+.PHONY: image-build-donor-controller
+image-build-donor-controller: ## Build donor-controller container image (local only)
+	docker buildx build \
+		--platform $(PLATFORMS) \
+		--tag $(DONOR_CONTROLLER_IMAGE):$(VERSION) \
+		--tag $(DONOR_CONTROLLER_IMAGE):latest \
+		-f $(DONOR_CONTROLLER_DOCKERFILE) \
+		.
+
+.PHONY: image-push-donor-controller
+image-push-donor-controller: ## Build and push donor-controller container image
+	docker buildx build \
+		--platform $(PLATFORMS) \
+		--push \
+		--annotation "index:org.opencontainers.image.source=https://github.com/llm-d-incubation/$(PROJECT_NAME)" \
+		--annotation "index:org.opencontainers.image.licenses=Apache-2.0" \
+		--tag $(DONOR_CONTROLLER_IMAGE):$(VERSION) \
+		--tag $(DONOR_CONTROLLER_IMAGE):latest \
+		-f $(DONOR_CONTROLLER_DOCKERFILE) \
 		.
 
 .PHONY: snapshot-agent-image-build
